@@ -60,7 +60,8 @@ async def startup_event():
             graph_adapter = Neo4jAdapter(
                 uri=config.NEO4J_URI,
                 user=config.NEO4J_USERNAME,  # ← Changed to 'user'
-                password=config.NEO4J_PASSWORD
+                password=config.NEO4J_PASSWORD,
+                database=config.NEO4J_DATABASE  # ← ADD THIS LINE
             )
             logger.info("✓ Connected to Neo4j")
             
