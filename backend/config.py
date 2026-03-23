@@ -10,7 +10,8 @@ class Config:
     # Server Configuration
     PORT = int(os.getenv("PORT", 8000))
     DATA_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
-    
+
+    ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
     # Neo4j Configuration
     USE_NEO4J = os.getenv("USE_NEO4J", "false").lower() == "true"
     NEO4J_URI = os.getenv("NEO4J_URI", "neo4j+s://localhost:7687")
