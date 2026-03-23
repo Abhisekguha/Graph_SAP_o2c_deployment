@@ -5,7 +5,6 @@ starlette==0.41.3
 
 # Data Validation & Settings
 pydantic==2.10.3
-pydantic-core==2.27.2
 pydantic-settings==2.6.1
 
 # Configuration Management
