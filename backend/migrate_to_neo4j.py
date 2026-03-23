@@ -67,7 +67,7 @@ class Neo4jMigration:
         
         # Build graph structure using existing GraphBuilder
         logger.info("Building graph structure...")
-        builder = GraphBuilder(entities)
+        builder = GraphBuilder(entities, self.db)
         graph = builder.build_graph()
         logger.info(f"✓ Graph structure built: {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges")
         
