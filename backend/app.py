@@ -112,11 +112,17 @@ async def startup_event():
             logger.info(f"Graph built: {graph_adapter.number_of_nodes()} nodes, {graph_adapter.number_of_edges()} edges")
         
         # Get stats
-        stats = graph_builder.get_stats() if graph_builder else {
-            'total_nodes': graph_adapter.number_of_nodes(),
-            'total_edges': graph_adapter.number_of_edges()
-        }
-        
+        try:
+            stats = graph_builder.get_stats() if graph_builder else {
+                'total_nodes': graph_adapter.number_of_nodes(),
+                'total_edges': graph_adapter.number_of_edges()
+            }
+        except AttributeError:
+            # If get_stats fails, just use basic stats
+            stats = {
+                'total_nodes': 0,
+                'total_edges': 0
+            }
         # Initialize query engine
         logger.info("Initializing query engine...")
         query_engine = QueryEngine(graph_adapter, entities)
