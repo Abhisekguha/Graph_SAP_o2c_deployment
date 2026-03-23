@@ -148,7 +148,7 @@ def main():
         
         logger.info("Configuration:")
         logger.info(f"  Neo4j URI: {config.NEO4J_URI}")
-        logger.info(f"  Neo4j User: {config.NEO4J_USER}")
+        logger.info(f"  Neo4j User: {config.NEO4J_USERNAME}")
         logger.info(f"  Neo4j Database: {config.NEO4J_DATABASE}")
         logger.info(f"  Data Path: {config.DATA_PATH}")
         logger.info(f"  Batch Size: {args.batch_size}")
@@ -157,7 +157,7 @@ def main():
         logger.info("\nConnecting to Neo4j...")
         neo4j_db = Neo4jAdapter(
             uri=config.NEO4J_URI,
-            user=config.NEO4J_USER,
+            user=config.NEO4J_USERNAME,
             password=config.NEO4J_PASSWORD,
             database=config.NEO4J_DATABASE
         )
