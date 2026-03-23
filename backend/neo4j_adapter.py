@@ -109,6 +109,27 @@ class Neo4jAdapter:
                 node['type'] = record["labels"][0] if record["labels"] else "Generic"
                 return node
             return None
+
+    def has_node(self, node_id: str) -> bool:
+        """
+        Check if a node exists in the graph
+        
+        Args:
+            node_id: Node ID to check
+            
+        Returns:
+            True if node exists, False otherwise
+        """
+        with self.driver.session(database=self.database) as session:
+            result = session.run(
+                """
+                MATCH (n {id: $node_id})
+                RETURN count(n) > 0 as exists
+                """,
+                node_id=node_id
+            )
+            record = result.single()
+            return record["exists"] if record else False
     
     def get_neighbors(self, node_id: str, relationship_type: Optional[str] = None) -> List[str]:
         """Get neighboring node IDs"""
