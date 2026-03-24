@@ -131,7 +131,7 @@ class Neo4jAdapter:
             record = result.single()
             return record["exists"] if record else False
 
-        def nodes(self, data=False):
+    def nodes(self, data=False):
         """
         Get all node IDs (NetworkX-compatible)
         
