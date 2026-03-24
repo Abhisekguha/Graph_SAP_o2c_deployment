@@ -66,18 +66,15 @@ class Neo4jMigration:
         logger.info("✓ Connected to Neo4j")
         
         # Build graph structure using existing GraphBuilder
-        logger.info("Building graph structure...")
+        # Note: Data is written directly to Neo4j during build
+        logger.info("Building graph structure and writing to Neo4j...")
         builder = GraphBuilder(entities, self.db)
-        graph = builder.build_graph()
-        logger.info(f"✓ Graph structure built: {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges")
-        
-        # Migrate nodes
-        logger.info("\nMigrating nodes to Neo4j...")
-        self._migrate_nodes(graph)
-        
-        # Migrate edges
-        logger.info("\nMigrating edges to Neo4j...")
-        self._migrate_edges(graph)
+        builder.build_graph()
+
+        # Verify what was written
+        node_count = self.db.number_of_nodes()
+        edge_count = self.db.number_of_edges()
+        logger.info(f"✓ Graph built and migrated: {node_count} nodes, {edge_count} edges")
         
         # Create indexes
         logger.info("\nCreating database indexes...")
