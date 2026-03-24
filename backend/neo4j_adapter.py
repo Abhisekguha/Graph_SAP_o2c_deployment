@@ -14,6 +14,24 @@ from collections import defaultdict
 logger = logging.getLogger(__name__)
 
 
+class NodesView:
+    """Proxy class to make nodes behave like NetworkX NodeView"""
+    
+    def __init__(self, adapter):
+        self.adapter = adapter
+    
+    def __call__(self, data=False):
+        """Allow nodes() iteration"""
+        return self.adapter._nodes_iter(data)
+    
+    def __getitem__(self, node_id):
+        """Allow nodes[node_id] subscripting"""
+        return self.adapter.get_node(node_id) or {}
+    
+    def __iter__(self):
+        """Default iteration without data"""
+        return self.adapter._nodes_iter(data=False)
+
 class Neo4jAdapter:
     """Neo4j database adapter with NetworkX-compatible interface"""
     
@@ -30,6 +48,14 @@ class Neo4jAdapter:
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
         self.database = database
         logger.info(f"Connected to Neo4j at {uri}")
+        
+    @property
+    def nodes(self):
+        """
+        Access nodes as dict-like object (NetworkX compatibility)
+        Returns a proxy that supports both iteration and subscripting
+        """
+        return NodesView(self)
     
     def close(self):
         """Close database connection"""
@@ -109,7 +135,7 @@ class Neo4jAdapter:
                 node['type'] = record["labels"][0] if record["labels"] else "Generic"
                 return node
             return None
-
+    
     def has_node(self, node_id: str) -> bool:
         """
         Check if a node exists in the graph
@@ -130,10 +156,10 @@ class Neo4jAdapter:
             )
             record = result.single()
             return record["exists"] if record else False
-
-    def nodes(self, data=False):
+    
+    def _nodes_iter(self, data=False):
         """
-        Get all node IDs (NetworkX-compatible)
+        Internal iterator for nodes (called by NodesView)
         
         Args:
             data: If True, return (node_id, properties) tuples
@@ -226,7 +252,7 @@ class Neo4jAdapter:
             )
             for record in result:
                 yield record["id"]
-    
+                
     def get_neighbors(self, node_id: str, relationship_type: Optional[str] = None) -> List[str]:
         """Get neighboring node IDs"""
         with self.driver.session(database=self.database) as session:
