@@ -17,7 +17,9 @@ class QueryEngine:
         
         # Step 1: Check guardrails EARLY to reject invalid queries
         try:
-            if not self._is_valid_query(query):
+            is_valid, reason = self._is_valid_query(query)
+            if not is_valid:
+                print(f"Query rejected by guardrails: {reason}")
                 return {
                     'answer': "This system is designed to answer questions related to the SAP Order-to-Cash dataset only. Please ask questions about sales orders, deliveries, invoices, payments, customers, or products.",
                     'query_type': 'invalid',
@@ -25,8 +27,8 @@ class QueryEngine:
                     'highlighted_nodes': []
                 }
         except Exception as e:
-            print(f"Guardrail check error: {e}")
-            # Continue if guardrail fails
+            print(f"WARNING: Guardrail check failed with error: {e}. Proceeding with caution.")
+            # Log but continue - don't block legitimate queries due to guardrail errors
         
         # Step 2: Try keyword shortcuts (fast path for common queries)
         try:
@@ -530,9 +532,34 @@ Respond ONLY with the formatted answer. Do not include any preamble like "Here i
         
         return None
     
-    def _is_valid_query(self, query: str) -> bool:
-        """Guardrail: Check if query is related to the dataset"""
+    def _is_valid_query(self, query: str) -> tuple[bool, str]:
+        """Guardrail: Check if query is related to the dataset. Returns (is_valid, reason)"""
         
+        query_lower = query.lower()
+        
+        # FAST PATH: Keyword-based rejection for obvious invalid queries
+        # This avoids expensive Gemini API calls for clear violations
+        invalid_keywords = [
+            'weather', 'climate', 'temperature', 'forecast',  # Weather
+            'poem', 'story', 'song', 'joke', 'riddle',  # Creative writing
+            'president', 'election', 'politics', 'government',  # Politics
+            'movie', 'film', 'actor', 'celebrity', 'music',  # Entertainment
+            'recipe', 'cook', 'food', 'restaurant',  # Cooking
+            'sports', 'football', 'basketball', 'game score',  # Sports
+            'stock', 'cryptocurrency', 'bitcoin', 'trading',  # Finance (unless SAP-related)
+        ]
+        
+        # Check if query contains invalid keywords and NO SAP-related terms
+        has_invalid_keyword = any(keyword in query_lower for keyword in invalid_keywords)
+        has_sap_keyword = any(term in query_lower for term in [
+            'sales', 'order', 'delivery', 'invoice', 'billing', 'payment', 
+            'customer', 'product', 'journal', 'document', 'sap', 'o2c'
+        ])
+        
+        if has_invalid_keyword and not has_sap_keyword:
+            return (False, f"Query about '{[k for k in invalid_keywords if k in query_lower][0]}' is not related to SAP O2C data")
+        
+        # SLOW PATH: Use Gemini for ambiguous cases
         guardrail_prompt = f"""You are a guardrail system for a SAP Order-to-Cash data query system.
 
 Determine if the following query is relevant to the SAP O2C dataset, which includes:
@@ -566,10 +593,17 @@ Respond with ONLY "VALID" or "INVALID".
         try:
             response = self.model.generate_content(guardrail_prompt)
             result = response.text.strip().upper()
-            return 'VALID' in result
+            is_valid = 'VALID' in result
+            reason = "LLM validation" if is_valid else "LLM rejected query as off-topic"
+            return (is_valid, reason)
         except Exception as e:
-            print(f"Guardrail check error: {e}")
-            return True  # Default to allowing if guardrail fails
+            print(f"Guardrail LLM check error: {e}")
+            # If LLM fails but we have SAP keywords, allow it
+            if has_sap_keyword:
+                return (True, "LLM failed but query contains SAP keywords")
+            else:
+                return (False, f"LLM check failed and no SAP keywords detected: {str(e)}")
+
     
     def _generate_response(self, query: str, conversation_history: List[Dict] = None) -> Dict[str, Any]:
         """Generate response using LLM"""
