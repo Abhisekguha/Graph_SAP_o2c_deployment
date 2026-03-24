@@ -266,13 +266,22 @@ async def query_graph(request: QueryRequest):
     try:
         logger.info(f"Processing query: {request.query}")
         
+        # Start timing
+        import time
+        start_time = time.time()
+        
         # Process query
         result = query_engine.process_query(
             request.query,
             request.conversation_history
         )
         
-        logger.info(f"Query type: {result.get('query_type')}")
+        elapsed = time.time() - start_time
+        logger.info(f"Query completed in {elapsed:.2f}s | Type: {result.get('query_type')} | Answer length: {len(result.get('answer', ''))} chars")
+        
+        # Log if query was rejected
+        if result.get('query_type') == 'invalid':
+            logger.warning(f"Query REJECTED by guardrails: {request.query}")
         
         return QueryResponse(
             answer=result['answer'],
