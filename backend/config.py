@@ -5,7 +5,7 @@ load_dotenv()
 
 class Config:
     # Environment Configuration
-    ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+    ENVIRONMENT = os.getenv("ENVIRONMENT", "production")
     
     # Gemini API Configuration
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
