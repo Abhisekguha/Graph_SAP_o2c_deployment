@@ -15,38 +15,55 @@ class QueryEngine:
     def process_query(self, query: str, conversation_history: List[Dict] = None) -> Dict[str, Any]:
         """Process natural language query and return structured response"""
         
-        # Step 1: Try keyword shortcuts (fast path for common queries)
-        graph_result = self._try_graph_query(query)
+        # Step 1: Check guardrails EARLY to reject invalid queries
+        try:
+            if not self._is_valid_query(query):
+                return {
+                    'answer': "This system is designed to answer questions related to the SAP Order-to-Cash dataset only. Please ask questions about sales orders, deliveries, invoices, payments, customers, or products.",
+                    'query_type': 'invalid',
+                    'data': None,
+                    'highlighted_nodes': []
+                }
+        except Exception as e:
+            print(f"Guardrail check error: {e}")
+            # Continue if guardrail fails
         
-        if graph_result:
-            # Graph query succeeded - enhance the raw data with Gemini for a presentable answer
-            enhanced = self._enhance_with_llm(query, graph_result)
-            return enhanced
-        
-        # Step 2: Use LLM to generate graph query plan (universal graph queries)
-        query_plan = self._generate_graph_query_plan(query)
-        
-        if query_plan:
-            # Execute the graph plan
-            graph_result = self._execute_graph_plan(query_plan)
+        # Step 2: Try keyword shortcuts (fast path for common queries)
+        try:
+            graph_result = self._try_graph_query(query)
             
-            # Format with LLM
-            formatted = self._format_graph_result(query, graph_result)
-            return formatted
+            if graph_result:
+                # Graph query succeeded - enhance the raw data with Gemini for a presentable answer
+                enhanced = self._enhance_with_llm(query, graph_result)
+                return enhanced
+        except Exception as e:
+            print(f"Graph query execution error: {e}")
         
-        # Step 3: Check guardrails for non-queryable requests
-        if not self._is_valid_query(query):
+        # Step 3: Use LLM to generate graph query plan (universal graph queries)
+        try:
+            query_plan = self._generate_graph_query_plan(query)
+            
+            if query_plan:
+                # Execute the graph plan
+                graph_result = self._execute_graph_plan(query_plan)
+                
+                # Format with LLM
+                formatted = self._format_graph_result(query, graph_result)
+                return formatted
+        except Exception as e:
+            print(f"Graph plan generation/execution error: {e}")
+        
+        # Step 4: Fallback - LLM explanation only (no graph data)
+        try:
+            llm_response = self._generate_response(query, conversation_history)
+            return llm_response
+        except Exception as e:
             return {
-                'answer': "This system is designed to answer questions related to the provided dataset only.",
-                'query_type': 'invalid',
+                'answer': f"Sorry, I encountered an error processing your query. Please try rephrasing your question.",
+                'query_type': 'error',
                 'data': None,
                 'highlighted_nodes': []
             }
-        
-        # Step 4: Fallback - LLM explanation only (no graph data)
-        llm_response = self._generate_response(query, conversation_history)
-        
-        return llm_response
     
     def _enhance_with_llm(self, original_query: str, graph_result: Dict) -> Dict:
         """Enhance raw graph query results with Gemini for a polished, presentable response"""
@@ -358,25 +375,32 @@ Respond ONLY with the formatted answer. Do not include any preamble like "Here i
         # Sample nodes of each type to discover properties
         sampled_types = set()
         for node_id in self.graph.nodes():
-            node_data = self.graph.nodes[node_id]
-            node_type = node_data.get('type', 'Unknown')
-            
-            # Sample up to 1 node per type
-            if node_type not in sampled_types:
-                sampled_types.add(node_type)
+            try:
+                node_data = self.graph.nodes[node_id]
+                if not node_data:
+                    continue
+                    
+                node_type = node_data.get('type', 'Unknown')
                 
-                properties = {}
-                for prop, value in node_data.items():
-                    if prop not in ['type']:
-                        properties[prop] = {
-                            'example': str(value)[:50] if value else 'null',
-                            'type': type(value).__name__
-                        }
-                
-                schema[node_type] = {
-                    'sample_id': node_id,
-                    'properties': properties
-                }
+                # Sample up to 1 node per type
+                if node_type not in sampled_types:
+                    sampled_types.add(node_type)
+                    
+                    properties = {}
+                    for prop, value in node_data.items():
+                        if prop not in ['type']:
+                            properties[prop] = {
+                                'example': str(value)[:50] if value else 'null',
+                                'type': type(value).__name__
+                            }
+                    
+                    schema[node_type] = {
+                        'sample_id': node_id,
+                        'properties': properties
+                    }
+            except Exception as e:
+                # Skip nodes that cause errors
+                continue
             
             # Stop after sampling all types or 20 types
             if len(sampled_types) >= 20:
@@ -466,8 +490,10 @@ Respond ONLY with the formatted answer. Do not include any preamble like "Here i
                         'highlighted_nodes': result.get('highlighted_nodes', [])
                     }
             
-            # Journal entries cleared/outstanding
-            elif 'journal' in query_lower and ('clear' in query_lower or 'outstanding' in query_lower or 'unpaid' in query_lower or 'payment' in query_lower):
+            # Invoices/Journal entries not paid or outstanding
+            elif (('invoice' in query_lower or 'journal' in query_lower or 'billing' in query_lower) and 
+                  ("haven't been paid" in query_lower or "not paid" in query_lower or 'unpaid' in query_lower or 
+                   'outstanding' in query_lower or 'pending payment' in query_lower or "haven't paid" in query_lower)):
                 result = self._execute_journal_entry_status_query()
                 if result:
                     return {
