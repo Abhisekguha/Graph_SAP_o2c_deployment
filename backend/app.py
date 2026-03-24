@@ -146,7 +146,7 @@ async def root():
 @app.get("/api/health")
 async def health_check():
     """Detailed health check"""
-    if graph_data is None:
+    if graph_adapter is None:
         raise HTTPException(status_code=503, detail="System not initialized")
     
     return {
@@ -233,9 +233,10 @@ async def get_edges(
     offset: Optional[int] = 0
 ):
     """Get edges with optional filtering"""
-    if graph_data is None:
+    if graph_adapter is None:
         raise HTTPException(status_code=503, detail="Graph not initialized")
     
+    graph_data = graph_adapter.get_graph_data(limit=limit*10)
     edges = graph_data['edges']
     
     # Filter by type if specified
@@ -335,7 +336,7 @@ async def search_nodes(q: str, limit: int = 20):
 @app.get("/api/analyze/broken-flows")
 async def analyze_broken_flows():
     """Analyze and return broken or incomplete document flows"""
-    if graph_builder is None or graph_data is None:
+    if graph_adapter is None:
         raise HTTPException(status_code=503, detail="System not initialized")
     
     try:
@@ -345,7 +346,7 @@ async def analyze_broken_flows():
             'invoices_without_payment': []
         }
         
-        graph = graph_builder.graph
+        graph = graph_adapter
         
         # Find sales orders without deliveries
         for node_id in graph.nodes():
@@ -354,10 +355,8 @@ async def analyze_broken_flows():
                     succ.startswith('DEL_') for succ in graph.successors(node_id)
                 )
                 if not has_delivery:
-                    node_data = next(
-                        (n for n in graph_data['nodes'] if n['id'] == node_id),
-                        {'id': node_id, 'label': node_id}
-                    )
+                    node_data = graph_adapter.get_node(node_id) or {'id': node_id, 'label': node_id}
+                    node_data['id'] = node_id
                     broken_flows['orders_without_delivery'].append(node_data)
         
         # Find deliveries without invoices 
@@ -373,10 +372,8 @@ async def analyze_broken_flows():
                                 break
                 
                 if not has_invoice:
-                    node_data = next(
-                        (n for n in graph_data['nodes'] if n['id'] == node_id),
-                        {'id': node_id, 'label': node_id}
-                    )
+                    node_data = graph_adapter.get_node(node_id) or {'id': node_id, 'label': node_id}
+                    node_data['id'] = node_id
                     broken_flows['deliveries_without_invoice'].append(node_data)
         
         # Find invoices without payments (no clearing document)
@@ -395,10 +392,8 @@ async def analyze_broken_flows():
                             break
                     
                     if not je_has_payment:
-                        node_data = next(
-                            (n for n in graph_data['nodes'] if n['id'] == node_id),
-                            {'id': node_id, 'label': node_id}
-                        )
+                        node_data = graph_adapter.get_node(node_id) or {'id': node_id, 'label': node_id}
+                        node_data['id'] = node_id
                         broken_flows['invoices_without_payment'].append(node_data)
         
         # Limit results
@@ -421,12 +416,10 @@ async def analyze_broken_flows():
 @app.get("/api/trace/{node_id}")
 async def trace_document(node_id: str):
     """Trace complete document flow from a given node"""
-    if graph_builder is None:
+    if graph_adapter is None:
         raise HTTPException(status_code=503, detail="System not initialized")
     
-    graph = graph_builder.graph
-    
-    if not graph.has_node(node_id):
+    if not graph_adapter.has_node(node_id):
         raise HTTPException(status_code=404, detail=f"Node {node_id} not found")
     
     # BFS to find all connected nodes
@@ -440,18 +433,26 @@ async def trace_document(node_id: str):
         visited.add(current)
         
         # Add predecessors and successors
-        for pred in graph.predecessors(current):
+        for pred in graph_adapter.predecessors(current):
             if pred not in visited:
                 queue.append(pred)
         
-        for succ in graph.successors(current):
+        for succ in graph_adapter.successors(current):
             if succ not in visited:
                 queue.append(succ)
     
     # Get nodes and edges for this flow
-    flow_nodes = [n for n in graph_data['nodes'] if n['id'] in visited]
+    flow_nodes = []
+    for vid in visited:
+        node_data = graph_adapter.get_node(vid)
+        if node_data:
+            node_data['id'] = vid
+            flow_nodes.append(node_data)
+    
+    # Get edges - fetch from adapter
+    all_edges = graph_adapter.get_graph_data(limit=10000)['edges']
     flow_edges = [
-        e for e in graph_data['edges']
+        e for e in all_edges
         if e['source'] in visited and e['target'] in visited
     ]
     
