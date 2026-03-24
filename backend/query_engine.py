@@ -14,52 +14,65 @@ class QueryEngine:
         
     def process_query(self, query: str, conversation_history: List[Dict] = None) -> Dict[str, Any]:
         """Process natural language query and return structured response"""
+        import traceback
         
         # Step 1: Check guardrails EARLY to reject invalid queries
         try:
             is_valid, reason = self._is_valid_query(query)
             if not is_valid:
-                print(f"Query rejected by guardrails: {reason}")
+                print(f"GUARDRAIL REJECTED: '{query}' | Reason: {reason}")
                 return {
                     'answer': "This system is designed to answer questions related to the SAP Order-to-Cash dataset only. Please ask questions about sales orders, deliveries, invoices, payments, customers, or products.",
                     'query_type': 'invalid',
                     'data': None,
                     'highlighted_nodes': []
                 }
+            print(f"GUARDRAIL PASSED: '{query}' | Reason: {reason}")
         except Exception as e:
-            print(f"WARNING: Guardrail check failed with error: {e}. Proceeding with caution.")
-            # Log but continue - don't block legitimate queries due to guardrail errors
+            print(f"WARNING: Guardrail check failed with error: {e}")
+            traceback.print_exc()
         
         # Step 2: Try keyword shortcuts (fast path for common queries)
         try:
+            print(f"STEP 2: Trying keyword-based graph query...")
             graph_result = self._try_graph_query(query)
             
             if graph_result:
+                print(f"STEP 2 SUCCESS: Got graph result, type={graph_result.get('query_type')}")
                 # Graph query succeeded - enhance the raw data with Gemini for a presentable answer
                 enhanced = self._enhance_with_llm(query, graph_result)
                 return enhanced
+            print(f"STEP 2: No keyword match found")
         except Exception as e:
-            print(f"Graph query execution error: {e}")
+            print(f"STEP 2 ERROR: {e}")
+            traceback.print_exc()
         
         # Step 3: Use LLM to generate graph query plan (universal graph queries)
         try:
+            print(f"STEP 3: Generating LLM graph query plan...")
             query_plan = self._generate_graph_query_plan(query)
             
             if query_plan:
+                print(f"STEP 3: Got query plan, executing...")
                 # Execute the graph plan
                 graph_result = self._execute_graph_plan(query_plan)
                 
                 # Format with LLM
                 formatted = self._format_graph_result(query, graph_result)
                 return formatted
+            print(f"STEP 3: LLM returned no queryable plan")
         except Exception as e:
-            print(f"Graph plan generation/execution error: {e}")
+            print(f"STEP 3 ERROR: {e}")
+            traceback.print_exc()
         
         # Step 4: Fallback - LLM explanation only (no graph data)
         try:
+            print(f"STEP 4: Fallback to LLM-only response...")
             llm_response = self._generate_response(query, conversation_history)
             return llm_response
         except Exception as e:
+            print(f"STEP 4 ERROR: {e}")
+            traceback.print_exc()
             return {
                 'answer': f"Sorry, I encountered an error processing your query. Please try rephrasing your question.",
                 'query_type': 'error',
@@ -541,12 +554,18 @@ Respond ONLY with the formatted answer. Do not include any preamble like "Here i
         # This avoids expensive Gemini API calls for clear violations
         invalid_keywords = [
             'weather', 'climate', 'temperature', 'forecast',  # Weather
-            'poem', 'story', 'song', 'joke', 'riddle',  # Creative writing
-            'president', 'election', 'politics', 'government',  # Politics
+            'poem', 'story', 'song', 'joke', 'riddle', 'essay',  # Creative writing
             'movie', 'film', 'actor', 'celebrity', 'music',  # Entertainment
-            'recipe', 'cook', 'food', 'restaurant',  # Cooking
-            'sports', 'football', 'basketball', 'game score',  # Sports
-            'stock', 'cryptocurrency', 'bitcoin', 'trading',  # Finance (unless SAP-related)
+            'recipe', 'cook', 'food', 'restaurant', 'pizza',  # Cooking
+            'sports', 'football', 'basketball', 'cricket', 'game score',  # Sports
+            'stock', 'cryptocurrency', 'bitcoin', 'trading', 'forex',  # Finance
+            'flight', 'hotel', 'travel', 'book a', 'booking', 'vacation', 'trip',  # Travel
+            'translate', 'language', 'dictionary',  # Language
+            'homework', 'assignment', 'exam', 'test prep',  # Education
+            'medical', 'doctor', 'hospital', 'disease', 'symptom',  # Health
+            'news', 'latest', 'headline',  # News
+            'social media', 'instagram', 'facebook', 'twitter', 'tiktok',  # Social
+            'dating', 'relationship advice',  # Personal
         ]
         
         # Check if query contains invalid keywords and NO SAP-related terms
