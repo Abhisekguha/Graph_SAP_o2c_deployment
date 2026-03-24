@@ -130,6 +130,102 @@ class Neo4jAdapter:
             )
             record = result.single()
             return record["exists"] if record else False
+
+        def nodes(self, data=False):
+        """
+        Get all node IDs (NetworkX-compatible)
+        
+        Args:
+            data: If True, return (node_id, properties) tuples
+            
+        Yields:
+            Node IDs or (node_id, properties) tuples
+        """
+        with self.driver.session(database=self.database) as session:
+            query = "MATCH (n) RETURN n.id as id, n as properties" if data else "MATCH (n) RETURN n.id as id"
+            result = session.run(query)
+            
+            for record in result:
+                if data:
+                    props = dict(record["properties"])
+                    yield (record["id"], props)
+                else:
+                    yield record["id"]
+    
+    def edges(self, data=False, keys=False):
+        """
+        Get all edges (NetworkX-compatible)
+        
+        Args:
+            data: If True, include edge properties
+            keys: If True, include edge keys (for MultiDiGraph compatibility)
+            
+        Yields:
+            Edge tuples
+        """
+        with self.driver.session(database=self.database) as session:
+            result = session.run(
+                """
+                MATCH (a)-[r]->(b)
+                RETURN a.id as source, b.id as target, type(r) as rel_type, properties(r) as props
+                """
+            )
+            
+            for record in result:
+                source = record["source"]
+                target = record["target"]
+                rel_type = record["rel_type"]
+                
+                if keys and data:
+                    yield (source, target, rel_type, dict(record["props"]))
+                elif keys:
+                    yield (source, target, rel_type)
+                elif data:
+                    yield (source, target, dict(record["props"]))
+                else:
+                    yield (source, target)
+    
+    def successors(self, node_id: str):
+        """
+        Get outgoing neighbors (NetworkX-compatible)
+        
+        Args:
+            node_id: Source node ID
+            
+        Yields:
+            Target node IDs
+        """
+        with self.driver.session(database=self.database) as session:
+            result = session.run(
+                """
+                MATCH (n {id: $node_id})-[]->(target)
+                RETURN DISTINCT target.id as id
+                """,
+                node_id=node_id
+            )
+            for record in result:
+                yield record["id"]
+    
+    def predecessors(self, node_id: str):
+        """
+        Get incoming neighbors (NetworkX-compatible)
+        
+        Args:
+            node_id: Target node ID
+            
+        Yields:
+            Source node IDs
+        """
+        with self.driver.session(database=self.database) as session:
+            result = session.run(
+                """
+                MATCH (source)-[]->(n {id: $node_id})
+                RETURN DISTINCT source.id as id
+                """,
+                node_id=node_id
+            )
+            for record in result:
+                yield record["id"]
     
     def get_neighbors(self, node_id: str, relationship_type: Optional[str] = None) -> List[str]:
         """Get neighboring node IDs"""
