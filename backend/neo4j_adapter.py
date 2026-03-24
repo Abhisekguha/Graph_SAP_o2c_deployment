@@ -22,15 +22,20 @@ class NodesView:
     
     def __call__(self, data=False):
         """Allow nodes() iteration"""
-        return self.adapter._nodes_iter(data)
+        self.adapter._ensure_cache()
+        if data:
+            return iter(self.adapter._node_cache.items())
+        return iter(self.adapter._node_cache.keys())
     
     def __getitem__(self, node_id):
         """Allow nodes[node_id] subscripting"""
-        return self.adapter.get_node(node_id) or {}
+        self.adapter._ensure_cache()
+        return self.adapter._node_cache.get(node_id, {})
     
     def __iter__(self):
         """Default iteration without data"""
-        return self.adapter._nodes_iter(data=False)
+        self.adapter._ensure_cache()
+        return iter(self.adapter._node_cache.keys())
 
 class Neo4jAdapter:
     """Neo4j database adapter with NetworkX-compatible interface"""
@@ -47,7 +52,61 @@ class Neo4jAdapter:
         """
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
         self.database = database
+        # In-memory cache for fast access (loaded lazily on first query)
+        self._node_cache = {}       # {node_id: {properties}}
+        self._successors = defaultdict(set)   # {node_id: {successor_ids}}
+        self._predecessors = defaultdict(set) # {node_id: {predecessor_ids}}
+        self._edge_data = {}        # {(source, target): {key: {properties}}}
+        self._cache_loaded = False
         logger.info(f"Connected to Neo4j at {uri}")
+    
+    def _ensure_cache(self):
+        """Load all nodes and edges into memory cache on first access"""
+        if self._cache_loaded:
+            return
+        
+        logger.info("Loading graph data into memory cache...")
+        
+        # Load all nodes in ONE query
+        with self.driver.session(database=self.database) as session:
+            result = session.run(
+                "MATCH (n) RETURN n.id as id, properties(n) as props, labels(n) as labels"
+            )
+            for record in result:
+                node_id = record["id"]
+                props = dict(record["props"])
+                props['type'] = record["labels"][0] if record["labels"] else "Generic"
+                self._node_cache[node_id] = props
+        
+        logger.info(f"Cached {len(self._node_cache)} nodes")
+        
+        # Load all edges in ONE query
+        edge_count = 0
+        with self.driver.session(database=self.database) as session:
+            result = session.run(
+                """
+                MATCH (a)-[r]->(b)
+                RETURN a.id as source, b.id as target, type(r) as rel_type, properties(r) as props
+                """
+            )
+            for record in result:
+                source = record["source"]
+                target = record["target"]
+                rel_type = record["rel_type"]
+                edge_props = dict(record["props"])
+                edge_props['type'] = rel_type
+                
+                self._successors[source].add(target)
+                self._predecessors[target].add(source)
+                
+                key = (source, target)
+                if key not in self._edge_data:
+                    self._edge_data[key] = {}
+                self._edge_data[key][rel_type] = edge_props
+                edge_count += 1
+        
+        self._cache_loaded = True
+        logger.info(f"Cached {edge_count} edges. Graph cache ready!")
         
     @property
     def nodes(self):
@@ -120,138 +179,50 @@ class Neo4jAdapter:
             )
     
     def get_node(self, node_id: str) -> Optional[Dict[str, Any]]:
-        """Get node by ID"""
-        with self.driver.session(database=self.database) as session:
-            result = session.run(
-                """
-                MATCH (n {id: $node_id})
-                RETURN n, labels(n) as labels
-                """,
-                node_id=node_id
-            )
-            record = result.single()
-            if record:
-                node = dict(record["n"])
-                node['type'] = record["labels"][0] if record["labels"] else "Generic"
-                return node
-            return None
+        """Get node by ID (uses cache)"""
+        self._ensure_cache()
+        return self._node_cache.get(node_id)
     
     def has_node(self, node_id: str) -> bool:
-        """
-        Check if a node exists in the graph
-        
-        Args:
-            node_id: Node ID to check
-            
-        Returns:
-            True if node exists, False otherwise
-        """
-        with self.driver.session(database=self.database) as session:
-            result = session.run(
-                """
-                MATCH (n {id: $node_id})
-                RETURN count(n) > 0 as exists
-                """,
-                node_id=node_id
-            )
-            record = result.single()
-            return record["exists"] if record else False
+        """Check if a node exists in the graph (uses cache)"""
+        self._ensure_cache()
+        return node_id in self._node_cache
+    
+    def get_edge_data(self, source: str, target: str) -> Optional[Dict]:
+        """Get edge data between two nodes (NetworkX-compatible, uses cache)"""
+        self._ensure_cache()
+        return self._edge_data.get((source, target))
     
     def _nodes_iter(self, data=False):
-        """
-        Internal iterator for nodes (called by NodesView)
-        
-        Args:
-            data: If True, return (node_id, properties) tuples
-            
-        Yields:
-            Node IDs or (node_id, properties) tuples
-        """
-        with self.driver.session(database=self.database) as session:
-            query = "MATCH (n) RETURN n.id as id, n as properties" if data else "MATCH (n) RETURN n.id as id"
-            result = session.run(query)
-            
-            for record in result:
-                if data:
-                    props = dict(record["properties"])
-                    yield (record["id"], props)
-                else:
-                    yield record["id"]
+        """Internal iterator for nodes (uses cache)"""
+        self._ensure_cache()
+        if data:
+            return iter(self._node_cache.items())
+        return iter(self._node_cache.keys())
     
     def edges(self, data=False, keys=False):
-        """
-        Get all edges (NetworkX-compatible)
-        
-        Args:
-            data: If True, include edge properties
-            keys: If True, include edge keys (for MultiDiGraph compatibility)
-            
-        Yields:
-            Edge tuples
-        """
-        with self.driver.session(database=self.database) as session:
-            result = session.run(
-                """
-                MATCH (a)-[r]->(b)
-                RETURN a.id as source, b.id as target, type(r) as rel_type, properties(r) as props
-                """
-            )
-            
-            for record in result:
-                source = record["source"]
-                target = record["target"]
-                rel_type = record["rel_type"]
-                
+        """Get all edges (NetworkX-compatible, uses cache)"""
+        self._ensure_cache()
+        for (source, target), edge_dict in self._edge_data.items():
+            for rel_type, props in edge_dict.items():
                 if keys and data:
-                    yield (source, target, rel_type, dict(record["props"]))
+                    yield (source, target, rel_type, props)
                 elif keys:
                     yield (source, target, rel_type)
                 elif data:
-                    yield (source, target, dict(record["props"]))
+                    yield (source, target, props)
                 else:
                     yield (source, target)
     
     def successors(self, node_id: str):
-        """
-        Get outgoing neighbors (NetworkX-compatible)
-        
-        Args:
-            node_id: Source node ID
-            
-        Yields:
-            Target node IDs
-        """
-        with self.driver.session(database=self.database) as session:
-            result = session.run(
-                """
-                MATCH (n {id: $node_id})-[]->(target)
-                RETURN DISTINCT target.id as id
-                """,
-                node_id=node_id
-            )
-            for record in result:
-                yield record["id"]
+        """Get outgoing neighbors (uses cache)"""
+        self._ensure_cache()
+        return iter(self._successors.get(node_id, set()))
     
     def predecessors(self, node_id: str):
-        """
-        Get incoming neighbors (NetworkX-compatible)
-        
-        Args:
-            node_id: Target node ID
-            
-        Yields:
-            Source node IDs
-        """
-        with self.driver.session(database=self.database) as session:
-            result = session.run(
-                """
-                MATCH (source)-[]->(n {id: $node_id})
-                RETURN DISTINCT source.id as id
-                """,
-                node_id=node_id
-            )
-            for record in result:
-                yield record["id"]
+        """Get incoming neighbors (uses cache)"""
+        self._ensure_cache()
+        return iter(self._predecessors.get(node_id, set()))
                 
     def get_neighbors(self, node_id: str, relationship_type: Optional[str] = None) -> List[str]:
         """Get neighboring node IDs"""
@@ -273,16 +244,14 @@ class Neo4jAdapter:
     # ===== GRAPH STATISTICS =====
     
     def number_of_nodes(self) -> int:
-        """Get total number of nodes"""
-        with self.driver.session(database=self.database) as session:
-            result = session.run("MATCH (n) RETURN count(n) as count")
-            return result.single()["count"]
+        """Get total number of nodes (uses cache)"""
+        self._ensure_cache()
+        return len(self._node_cache)
     
     def number_of_edges(self) -> int:
-        """Get total number of edges"""
-        with self.driver.session(database=self.database) as session:
-            result = session.run("MATCH ()-[r]->() RETURN count(r) as count")
-            return result.single()["count"]
+        """Get total number of edges (uses cache)"""
+        self._ensure_cache()
+        return sum(len(edges) for edges in self._edge_data.values())
     
     def get_node_types(self) -> Dict[str, int]:
         """Get count of nodes by type"""
