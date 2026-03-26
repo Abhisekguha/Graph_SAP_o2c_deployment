@@ -439,6 +439,7 @@ Respond ONLY with the formatted answer. Do not include any preamble like "Here i
     
     def _try_graph_query(self, query: str) -> Optional[Dict]:
         """Try to execute a graph query based on keyword detection. Returns None if no match."""
+        import re  # Import here for pattern matching
         query_lower = query.lower()
         
         try:
@@ -464,8 +465,10 @@ Respond ONLY with the formatted answer. Do not include any preamble like "Here i
                         'highlighted_nodes': result.get('highlighted_nodes', [])
                     }
             
-            # Trace flow
-            elif 'trace' in query_lower or ('flow' in query_lower and 'billing' in query_lower):
+            # Trace flow - includes "trace", "flow", or "search" keywords with document/customer context
+            elif ('trace' in query_lower or 'flow' in query_lower or 'search' in query_lower) and \
+                 (any(word in query_lower for word in ['for', 'of', 'document', 'billing', 'invoice', 'delivery', 'order']) or \
+                  bool(re.search(r'\b[A-Z][a-z]+', query))):  # Or has capitalized words (likely names)
                 result = self._execute_trace_query(query)
                 if result:
                     return {
@@ -854,23 +857,38 @@ Important:
             # Extract potential names: quoted strings or capitalized multi-word names
             name_match = re.search(r"['\"]([^'\"]+)['\"]", query)
             if not name_match:
-                # Try to find capitalized hyphenated or multi-word names (e.g., Bradley-Kelley, Nguyen-Davis)
-                name_match = re.search(r'\b([A-Z][a-z]+-[A-Z][a-z]+(?:\s+and\s+[A-Z][a-z]+)?)\b', query)
+                # Try to find capitalized hyphenated or multi-word names with commas and "and"
+                # Matches patterns like: "Nelson, Fitzpatrick and Jordan", "Bradley-Kelley", "Smith and Sons"
+                name_match = re.search(r'\b([A-Z][a-z]+(?:[,]?\s+(?:and\s+)?[A-Z][a-z]+)+)\b', query)
             if not name_match:
-                # Try capitalized words that look like company/person names
-                name_match = re.search(r'\b([A-Z][a-z]+(?:[,\s]+[A-Z][a-z]+)+)\b', query)
+                # Try capitalized words that look like company/person names (without comma requirement)
+                name_match = re.search(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b', query)
+            if not name_match:
+                # Try hyphenated names like "Bradley-Kelley", "Nguyen-Davis"
+                name_match = re.search(r'\b([A-Z][a-z]+-[A-Z][a-z]+)\b', query)
             if not name_match:
                 # Try single capitalized word at the end or after 'for'/'of' (e.g., "Cardenas", "for Cardenas")
                 name_match = re.search(r'(?:for|of|from)?\s*\b([A-Z][a-z]{3,})\s*$', query)
             
             if name_match:
                 search_name = name_match.group(1).lower().strip()
+                # Remove commas and normalize spaces for matching
+                search_name_normalized = re.sub(r'[,\s]+', ' ', search_name).strip()
+                
+                print(f"TRACE: Searching for customer name: '{search_name}' (normalized: '{search_name_normalized}')")
+                
                 for node_id in self.graph.nodes():
                     if node_id.startswith('CUST_'):
                         node_data = self.graph.nodes[node_id]
                         cust_name = node_data.get('businessPartnerFullName', node_data.get('label', '')).lower()
-                        if search_name in cust_name or cust_name in search_name:
+                        cust_name_normalized = re.sub(r'[,\s]+', ' ', cust_name).strip()
+                        
+                        # Try multiple matching strategies
+                        if (search_name in cust_name or cust_name in search_name or
+                            search_name_normalized in cust_name_normalized or 
+                            cust_name_normalized in search_name_normalized):
                             start_node = node_id
+                            print(f"TRACE: Found matching customer: {node_id} - {cust_name}")
                             break
         
         # 3. If node not found, return None to indicate document doesn't exist
@@ -1135,20 +1153,40 @@ Important:
         elif cust_id_match:
             # Try with CUST_ prefix - handle both correct ID and typos
             raw_id = cust_id_match.group(1)
-            # Try exact match first
+            
+            # Strategy 1: Try exact match first
             customer_id = f"CUST_{raw_id}"
+            if self.graph.has_node(customer_id):
+                pass  # Found it!
+            # Strategy 2: If ID has 10 digits and starts with '323', try removing middle '3' (323... → 32...)
+            elif len(raw_id) == 10 and raw_id.startswith('323'):
+                # Remove character at index 1 (the middle '3'): 3230000083 → 320000083
+                corrected_id = raw_id[0] + raw_id[2:]
+                customer_id = f"CUST_{corrected_id}"
+                if not self.graph.has_node(customer_id):
+                    # Strategy 3: Try removing first digit as fallback
+                    customer_id = f"CUST_{raw_id[1:]}"
+            # Strategy 4: Try substring matching if still not found
             if not self.graph.has_node(customer_id):
-                # If not found and ID looks like possible typo (starts with 3), try removing first digit
-                if raw_id.startswith('32') and len(raw_id) == 10:
-                    customer_id = f"CUST_{raw_id[1:]}"  # Remove first '3' from 3230000083 -> 320000083
+                # Search for any customer ID that contains this number sequence
+                for node_id in self.graph.nodes():
+                    if node_id.startswith('CUST_') and raw_id in node_id:
+                        customer_id = node_id
+                        break
         elif cust_name_match:
             # Search for customer by name
             search_name = cust_name_match.group(1).lower()
+            search_name_normalized = re.sub(r'[,\s]+', ' ', search_name).strip()
+            
             for node_id in self.graph.nodes():
                 if node_id.startswith('CUST_'):
                     node_data = self.graph.nodes[node_id]
                     cust_name = node_data.get('businessPartnerFullName', node_data.get('label', '')).lower()
-                    if search_name in cust_name or cust_name in search_name:
+                    cust_name_normalized = re.sub(r'[,\s]+', ' ', cust_name).strip()
+                    
+                    if (search_name in cust_name or cust_name in search_name or
+                        search_name_normalized in cust_name_normalized or 
+                        cust_name_normalized in search_name_normalized):
                         customer_id = node_id
                         break
         
@@ -1468,6 +1506,7 @@ Important:
         
         answer = f"{pct_billed:.1f}% of sales orders ({delivered_and_billed_so} out of {total_so}) have been successfully delivered and billed."
         return {'results': results, 'highlighted_nodes': [], 'answer': answer}
+
 
 
 
